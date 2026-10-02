@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="https://unpkg.com/jspsych@8.2.1"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-preload@2.1.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-html-button-response@2.1.0"></script>
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/jspsych@8.2.1/css/jspsych.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body></body>
+<script>
+
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwjQa7rC_IaO_i3wsu7zRmEmcNdEwPznYRId0Cm_um4XD34J3BbPWnFDKJmfaUmnSk1VA/exec';
+const TOKEN = 'prueba';
+
+async function main() {
+  // 1. Leer el CSV de estímulos
+  const text = await (await fetch('short_stimuli.csv')).text();
+  const stimuli = Papa.parse(text, { header: true, skipEmptyLines: true })
+    .data.map(r => ({ ...r, ground_truth: r.ground_truth.trim().toLowerCase() }));
+
+  // 2. Inicializar jsPsych
+  const jsPsych = initJsPsych({
+    on_finish: async () => {
+      const responses = jsPsych.data.get().filter({ task: 'respuesta' })
+        .ignore(['task', 'trial_type', 'plugin_version', 'time_elapsed']);
+      const csv = responses.csv();
+
+      try {
+        await fetch(SCRIPT_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ token: TOKEN, participant_id, csv })
+        });
+        document.body.innerHTML = '<p>Respuestas enviadas. Gracias por participar.</p>';
+      } catch (e) {
+        responses.localSave('csv', 'resultados.csv');
+        document.body.innerHTML = '<p>No se pudo enviar el resultado. Se ha descargado una copia local del CSV.</p>';
+      }
+    }
+  });
+
+  const participant_id = jsPsych.randomization.randomID(10);
+  jsPsych.data.addProperties({ participant_id });
+
+  // 3. Precarga de todos los audios
+  const preload = {
+    type: jsPsychPreload,
+    audio: stimuli.map(s => s.file),
+    message: '<p>Cargando audios...</p>'
+  };
+
+  // 4. Orden aleatorio distinto para cada participante
+  const shuffled = jsPsych.randomization.shuffle(stimuli);
+
+  // 5. Trials: respuesta + feedback por cada audio
+  const trials = shuffled.flatMap((s, i) => [
+    {
+      type: jsPsychHtmlButtonResponse,
+      stimulus: `<p><audio controls autoplay preload="auto" style="width:100%;max-width:560px" src="${s.file}">Tu navegador no puede reproducir este audio.</audio></p>`,
+      choices: ['Real', 'Fake'],
+      prompt: `<p>Audio ${i + 1} de ${shuffled.length}</p>`,
+      on_load: () => {
+        const audio = document.querySelector('#jspsych-content audio');
+        const responseButtons = document.querySelectorAll('#jspsych-content .jspsych-btn');
+        responseButtons.forEach(button => button.disabled = true);
+        audio.addEventListener('ended', () => {
+          responseButtons.forEach(button => button.disabled = false);
+        });
+      },
+      data: {
+        task: 'respuesta',
+        trial_number: i + 1,
+        stimulus_id: s.stimulus_id,
+        file: s.file,
+        ground_truth: s.ground_truth,
+        speaker: s.speaker,
+        sistema_deepfake: s.sistema_deepfake
+      },
+      on_finish: (d) => {
+        d.response_label = ['real', 'fake'][d.response];
+        d.correct = d.response_label === d.ground_truth ? 1 : 0;
+      }
+    },
+    {
+      type: jsPsychHtmlButtonResponse,
+      stimulus: () => {
+        const d = jsPsych.data.getLastTrialData().values()[0];
+        return `<p style="font-size:1.4em">${d.correct ? '✅ Correcto' : '❌ Incorrecto'}</p>
+                <p>Este audio era <b>${d.ground_truth.toUpperCase()}</b>.</p>`;
+      },
+      choices: ['Siguiente'],
+      data: { task: 'feedback' }
+    }
+  ]);
+
+  trials.push({
+    type: jsPsychHtmlButtonResponse,
+    stimulus: () => {
+      const responses = jsPsych.data.get().filter({ task: 'respuesta' });
+      const answers = responses.values();
+      const totalCorrect = answers.reduce((total, answer) => total + answer.correct, 0);
+      const percentage = answers.length === 0 ? 0 : Math.round((totalCorrect / answers.length) * 1000) / 10;
+
+      responses.addToAll({
+        total_correct: totalCorrect,
+        total_trials: answers.length,
+        score_percentage: percentage
+      });
+
+      return `<h2>Test finalizado</h2>
+              <p style="font-size:1.4em">Puntuación: <b>${totalCorrect} de ${answers.length}</b></p>
+              <p>Resultado: <b>${percentage}%</b></p>`;
+    },
+    choices: ['Finalizar'],
+    data: { task: 'resultado' }
+  });
+
+  jsPsych.run([preload, ...trials]);
+}
+
+main();
+</script>
+</html>
