@@ -12,8 +12,44 @@
 <body></body>
 <script>
 
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwjQa7rC_IaO_i3wsu7zRmEmcNdEwPznYRId0Cm_um4XD34J3BbPWnFDKJmfaUmnSk1VA/exec';
-const TOKEN = 'prueba';
+const SUPABASE_URL = 'https://cfstxgxlmkmqklxygvnt.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_g_paAAmG5U6Vf6v2n8EH_Q_Wnnld1CM';
+const participant_id = crypto.randomUUID().slice(0, 10);
+let failedSends = 0;
+const pendingSaves = [];
+
+async function saveTrial(d) {
+  const row = {
+    participant_id,
+    trial_number: d.trial_number,
+    stimulus_id: d.stimulus_id,
+    file: d.file,
+    ground_truth: d.ground_truth,
+    response_label: d.response_label,
+    correct: d.correct,
+    rt: d.rt,
+    speaker: d.speaker ?? null,
+    sistema_deepfake: d.sistema_deepfake ?? null
+  };
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/responses`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify(row),
+      keepalive: true
+    });
+    if (!response.ok) throw new Error(response.status);
+  } catch (error) {
+    failedSends++;
+    console.error('Fallo al guardar el trial', error);
+  }
+}
 
 async function main() {
   // 1. Leer el CSV de estímulos
@@ -24,26 +60,20 @@ async function main() {
   // 2. Inicializar jsPsych
   const jsPsych = initJsPsych({
     on_finish: async () => {
-      const responses = jsPsych.data.get().filter({ task: 'respuesta' })
-        .ignore(['task', 'trial_type', 'plugin_version', 'time_elapsed']);
-      const csv = responses.csv();
+      document.body.innerHTML = '<p>Guardando respuestas...</p>';
+      await Promise.all(pendingSaves);
 
-      try {
-        await fetch(SCRIPT_URL, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({ token: TOKEN, participant_id, csv })
-        });
-        document.body.innerHTML = '<p>Respuestas enviadas. Gracias por participar.</p>';
-      } catch (e) {
-        responses.localSave('csv', 'resultados.csv');
-        document.body.innerHTML = '<p>No se pudo enviar el resultado. Se ha descargado una copia local del CSV.</p>';
+      if (failedSends > 0) {
+        jsPsych.data.get().filter({ task: 'respuesta' })
+          .ignore(['task', 'trial_type', 'plugin_version', 'time_elapsed'])
+          .localSave('csv', `resultados_${participant_id}.csv`);
+        document.body.innerHTML = '<p>Algunas respuestas no se pudieron enviar. Se ha descargado una copia local del CSV.</p>';
+      } else {
+        document.body.innerHTML = '<p>Respuestas guardadas. Gracias por participar.</p>';
       }
     }
   });
 
-  const participant_id = jsPsych.randomization.randomID(10);
   jsPsych.data.addProperties({ participant_id });
 
   // 3. Precarga de todos los audios
@@ -83,6 +113,7 @@ async function main() {
       on_finish: (d) => {
         d.response_label = ['real', 'fake'][d.response];
         d.correct = d.response_label === d.ground_truth ? 1 : 0;
+        pendingSaves.push(saveTrial(d));
       }
     },
     {
