@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="https://unpkg.com/jspsych@8.2.1"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-preload@2.1.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-html-button-response@2.1.0"></script>
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/jspsych@8.2.1/css/jspsych.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body></body>
+<script>
+
+const SUPABASE_URL = 'https://cfstxgxlmkmqklxygvnt.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_g_paAAmG5U6Vf6v2n8EH_Q_Wnnld1CM';
+const participant_id = crypto.randomUUID().slice(0, 10);
+let failedSends = 0;
+const pendingSaves = [];
+
+async function saveTrial(d) {
+  const row = {
+    participant_id,
+    trial_number: d.trial_number,
+    stimulus_id: d.stimulus_id,
+    file: d.file,
+    ground_truth: d.ground_truth,
+    response_label: d.response_label,
+    correct: d.correct,
+    rt: d.rt,
+    speaker: d.speaker ?? null,
+    sistema_deepfake: d.sistema_deepfake ?? null
+  };
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/responses`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify(row),
+      keepalive: true
+    });
+    if (!response.ok) throw new Error(response.status);
+  } catch (error) {
+    failedSends++;
+    console.error('Fallo al guardar el trial', error);
+  }
+}
+
+async function main() {
+  // 1. Leer los CSV de estímulos
+  const text = await (await fetch('short_stimuli.csv')).text();
+  const stimuli = Papa.parse(text, { header: true, skipEmptyLines: true })
+    .data.map(r => ({ ...r, ground_truth: r.ground_truth.trim().toLowerCase() }));
+  const exampleText = await (await fetch('example_stimuli.csv')).text();
+  const exampleStimuli = Papa.parse(exampleText, { header: true, skipEmptyLines: true })
+    .data.map(r => ({
+      ...r,
+      file: `examples/${r.file.split(/[\\/]/).pop()}`,
+      ground_truth: r.ground_truth.trim().toLowerCase()
+    }));
+
+  // 2. Inicializar jsPsych
+  const jsPsych = initJsPsych({
+    on_finish: async () => {
+      document.body.innerHTML = '<p>Guardando respuestas...</p>';
+      await Promise.all(pendingSaves);
+
+      if (failedSends > 0) {
+        jsPsych.data.get().filter({ task: 'respuesta' })
+          .ignore(['task', 'trial_type', 'plugin_version', 'time_elapsed'])
+          .localSave('csv', `resultados_${participant_id}.csv`);
+        document.body.innerHTML = '<p>Algunas respuestas no se pudieron enviar. Se ha descargado una copia local del CSV.</p>';
+      } else {
+        document.body.innerHTML = '<p>Respuestas guardadas. Gracias por participar.</p>';
+      }
+    }
+  });
+
+  jsPsych.data.addProperties({ participant_id });
+
+  // 3. Precarga de los audios de ejemplos y del test
+  const preload = {
+    type: jsPsychPreload,
+    audio: [...exampleStimuli, ...stimuli].map(s => s.file),
+    message: '<p>Cargando audios...</p>'
+  };
+
+  // 4. Orden aleatorio distinto para cada participante
+  const shuffled = jsPsych.randomization.shuffle(stimuli);
+
+  const makeAnswerTrial = (s, i, total, task) => ({
+      type: jsPsychHtmlButtonResponse,
+      stimulus: `<p><audio controls autoplay preload="auto" style="width:100%;max-width:560px" src="${s.file}">Tu navegador no puede reproducir este audio.</audio></p>`,
+      choices: ['Real', 'Fake'],
+      prompt: `<p>${task === 'ejemplo' ? 'Ejemplo' : 'Audio'} ${i + 1} de ${total}</p>`,
+      on_load: () => {
+        const audio = document.querySelector('#jspsych-content audio');
+        const responseButtons = document.querySelectorAll('#jspsych-content .jspsych-btn');
+        responseButtons.forEach(button => button.disabled = true);
+        audio.addEventListener('ended', () => {
+          responseButtons.forEach(button => button.disabled = false);
+        });
+      },
+      data: {
+        task,
+        trial_number: i + 1,
+        stimulus_id: s.stimulus_id,
+        file: s.file,
+        ground_truth: s.ground_truth,
+        speaker: s.speaker,
+        sistema_deepfake: s.sistema_deepfake
+      },
+      on_finish: (d) => {
+        d.response_label = ['real', 'fake'][d.response];
+        d.correct = d.response_label === d.ground_truth ? 1 : 0;
+        if (d.task === 'respuesta') pendingSaves.push(saveTrial(d));
+      }
+  });
+
+  const makeFeedbackTrial = (task, nextLabel) => ({
+      type: jsPsychHtmlButtonResponse,
+      stimulus: () => {
+        const d = jsPsych.data.getLastTrialData().values()[0];
+        return `<p style="font-size:1.4em">${d.correct ? '✅ Correcto' : '❌ Incorrecto'}</p>
+                <p>Este audio era <b>${d.ground_truth.toUpperCase()}</b>.</p>`;
+      },
+      choices: [nextLabel],
+      data: { task }
+  });
+
+  const consentTrial = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: '<h2>Consentimiento informado</h2><p>Consentio libere huic studio participare.</p><p><label><input id="consent-checkbox" type="checkbox"> Acepto participar</label></p>',
+    choices: ['Continuar'],
+    on_load: () => {
+      const checkbox = document.querySelector('#consent-checkbox');
+      const continueButton = document.querySelector('#jspsych-content .jspsych-btn');
+      continueButton.disabled = true;
+      checkbox.addEventListener('change', () => {
+        continueButton.disabled = !checkbox.checked;
+      });
+    },
+    data: { task: 'consentimiento' }
+  };
+
+  const exampleTrials = [
+    {
+      type: jsPsychHtmlButtonResponse,
+      stimulus: '<h2>Ejemplos</h2><p>Antes de empezar, escucharás dos audios de práctica. En cada uno, indica si la voz te parece real o generada artificialmente. Después verás la respuesta correcta.</p>',
+      choices: ['Comenzar ejemplos'],
+      data: { task: 'instrucciones_ejemplos' }
+    },
+    ...exampleStimuli.flatMap((s, i) => [
+      makeAnswerTrial(s, i, exampleStimuli.length, 'ejemplo'),
+      makeFeedbackTrial(
+        'feedback_ejemplo',
+        i === exampleStimuli.length - 1 ? 'Continuar al test' : 'Siguiente ejemplo'
+      )
+    ])
+  ];
+
+  // 5. Trials principales: respuesta + feedback por cada audio
+  const trials = shuffled.flatMap((s, i) => [
+    makeAnswerTrial(s, i, shuffled.length, 'respuesta'),
+    makeFeedbackTrial('feedback', 'Siguiente')
+  ]);
+
+  trials.push({
+    type: jsPsychHtmlButtonResponse,
+    stimulus: () => {
+      const responses = jsPsych.data.get().filter({ task: 'respuesta' });
+      const answers = responses.values();
+      const totalCorrect = answers.reduce((total, answer) => total + answer.correct, 0);
+      const percentage = answers.length === 0 ? 0 : Math.round((totalCorrect / answers.length) * 1000) / 10;
+
+      responses.addToAll({
+        total_correct: totalCorrect,
+        total_trials: answers.length,
+        score_percentage: percentage
+      });
+
+      return `<h2>Test finalizado</h2>
+              <p style="font-size:1.4em">Puntuación: <b>${totalCorrect} de ${answers.length}</b></p>
+              <p>Resultado: <b>${percentage}%</b></p>`;
+    },
+    choices: ['Finalizar'],
+    data: { task: 'resultado' }
+  });
+
+  jsPsych.run([preload, consentTrial, ...exampleTrials, ...trials]);
+}
+
+main();
+</script>
+</html>
