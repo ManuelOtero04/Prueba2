@@ -1,3 +1,0 @@
-stimulus_id,file,ground_truth
-s001,audio/AnaObregon.wav,real
-s004,audio/AntonioBanderas_artificial.wav,fake
