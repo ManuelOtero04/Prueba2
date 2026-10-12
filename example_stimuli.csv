@@ -1,3 +1,3 @@
 stimulus_id,file,ground_truth
-s009,audio/JordiHurtado.wav,real
-s012,audio/LolaIndigo_artificial.wav,fake
+s009,audio2/JordiHurtado.wav,real
+s012,audio2/LolaIndigo_artificial.wav,fake
