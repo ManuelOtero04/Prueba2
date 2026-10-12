@@ -1,0 +1,5 @@
+stimulus_id,file,ground_truth
+s008,audio/EvaHache_artificial.wav,fake
+s014,audio/PedroPiqueras_artificial.wav,fake
+s015,audio/RafaelNadal.wav,real
+s017,audio/RosarioFlores.wav,real
