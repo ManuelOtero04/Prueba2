@@ -38,7 +38,7 @@ const finalGifHtmlPromise = fetch('johnny-depp-pirate.gif')
     for (let i = 0; i <= bytes.length - marker.length; i++) {
       if (marker.every((byte, offset) => bytes[i + offset] === byte) &&
           bytes[i + 11] === 3 && bytes[i + 12] === 1) {
-        bytes[i + 13] = 5;
+        bytes[i + 13] = 4;
         bytes[i + 14] = 0;
         const image = new Image();
         image.src = URL.createObjectURL(new Blob([bytes], { type: 'image/gif' }));
